@@ -83,31 +83,48 @@ class feature_fusion_block(nn.Module):
     def __init__(self, dim, num_head=8):
         super().__init__()
         self.num_head = num_head
-        self.proj = nn.Linear(dim * 3 //2, dim)
-        self.proj_e = nn.Linear(dim * 3 //2, dim)
+        self.proj = nn.Linear(dim * 3 // 2, dim)
+        self.proj_e = nn.Linear(dim * 3 // 2, dim)
         self.norm = LayerNorm(dim, eps=1e-6, data_format="channels_last")
         self.norm_e = LayerNorm(dim, eps=1e-6, data_format="channels_last")
-        self.GFA = GFA(self.num_head,dim)
+        self.GFA = GFA(self.num_head, dim)
         self.LFA = LFA(dim)
 
+        # VRL-style residual gates (critical for pretrained reuse)
+        self.scale_x = nn.Parameter(torch.ones(1) * 1e-3) # α
+        self.scale_e = nn.Parameter(torch.ones(1) * 1e-3) # β
+
+
+
+
     def forward(self, x, x_e):
+
+        # NCHW -> NHWC
         x = x.transpose(1, 3).transpose(1, 2)
         x_e = x_e.transpose(1, 3).transpose(1, 2)
 
+        # Identity paths (preserve pretrained features)
+        x0, x_e0 = x, x_e
 
-        x = self.norm(x)
-        x_e = self.norm_e(x_e)
+        # Normed for interaction
+        x_n = self.norm(x)
+        x_en = self.norm_e(x_e)
 
-        gfa1 = self.GFA(x, x_e)
+        gfa1 = self.GFA(x_n, x_en)   # (B,H,W,C/2)
+        lfa1 = self.LFA(x_n, x_en)   # (B,H,W,C/2)
+        lfa2 = self.LFA(x_en, x_n)   # (B,H,W,C/2)
 
-        lfa1 = self.LFA(x, x_e)
-        lfa2 = self.LFA(x_e, x)
+        fused = torch.cat([gfa1, lfa1, lfa2], dim=3)  # (B,H,W,3C/2)
 
-        x = torch.cat([ gfa1, lfa1,lfa2], dim=3)
+        dx = self.proj(fused)        # (B,H,W,C)
+        dx_e = self.proj_e(fused)    # (B,H,W,C)
 
-        x_e = self.proj_e(x)
-        x = self.proj(x)
+        # Gated residual update (VRL spirit: "inject, don't overwrite")
+        x = x0 + self.scale_x * dx
+        x_e = x_e0 + self.scale_e * dx_e
 
-        x = x.permute(0, 3, 1, 2)
-        x_e = x_e.permute(0, 3, 1, 2)
+        # NHWC -> NCHW
+        x = x.permute(0, 3, 1, 2).contiguous()
+        x_e = x_e.permute(0, 3, 1, 2).contiguous()
         return x, x_e
+

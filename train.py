@@ -161,6 +161,7 @@ if __name__ == '__main__':
         miou, best_miou = 0.0, 0.0
 
         for epoch in range(engine.state.epoch, config.nepochs + 1):
+
             model.train()
             if engine.distributed:
                 train_sampler.set_epoch(epoch)
