@@ -123,7 +123,7 @@ def get_val_loader(engine, dataset,config,gpus):
 
     val_sampler = None
     is_shuffle = False
-    batch_size = 1
+    batch_size = 2
 
     if engine.distributed:
         val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)

@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="87dc408e-a02d-4050-9aaa-ae3f59deed4a" name="Changes" comment="Changes">
+    <list default="true" id="87dc408e-a02d-4050-9aaa-ae3f59deed4a" name="Changes" comment="Changes:vrl modify">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/local_configs/NYUDepthv2/HDBFormer.py" beforeDir="false" afterPath="$PROJECT_DIR$/local_configs/NYUDepthv2/HDBFormer.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/models/HDBFormer.py" beforeDir="false" afterPath="$PROJECT_DIR$/models/HDBFormer.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/models/MIIM.py" beforeDir="false" afterPath="$PROJECT_DIR$/models/MIIM.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/train.py" beforeDir="false" afterPath="$PROJECT_DIR$/train.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/utils/pyt_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/pyt_utils.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -26,6 +27,7 @@
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="SET_USER_NAME_GLOBALLY" value="false" />
   </component>
   <component name="GitHubPullRequestSearchHistory">{
   &quot;lastFilter&quot;: {
@@ -48,19 +50,19 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.upsample.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "git-widget-placeholder": "vrl",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "vcs.Git",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.upsample.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;vrl&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;vcs.Git&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RunManager">
     <configuration name="NYUDepthv2_bestmiou.pth" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="HDBFormer" />
@@ -110,12 +112,32 @@
       <workItem from="1769739625737" duration="4384000" />
       <workItem from="1769789334434" duration="4110000" />
       <workItem from="1769850477353" duration="2243000" />
-      <workItem from="1769916660934" duration="10097000" />
+      <workItem from="1769916660934" duration="15974000" />
+      <workItem from="1770004187710" duration="3869000" />
+      <workItem from="1770022736281" duration="445000" />
+      <workItem from="1770178530154" duration="6628000" />
+      <workItem from="1770282446290" duration="9273000" />
+      <workItem from="1770342906100" duration="10928000" />
+      <workItem from="1770450979017" duration="6781000" />
+      <workItem from="1770551103123" duration="2487000" />
     </task>
+    <task id="LOCAL-00001" summary="Changes:vrl modify">
+      <option name="closed" value="true" />
+      <created>1769941878213</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1769941878213</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="Changes:vrl modify" />
+    <option name="LAST_COMMIT_MESSAGE" value="Changes:vrl modify" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>

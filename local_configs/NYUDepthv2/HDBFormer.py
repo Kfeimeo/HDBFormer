@@ -11,7 +11,7 @@ C.lr = 3e-5
 C.lr_power = 0.9
 C.momentum = 0.9
 C.weight_decay = 0.01
-C.batch_size = 6
+C.batch_size = 2
 
 C.nepochs = 600
 C.niters_per_epoch = C.num_train_imgs // C.batch_size + 1

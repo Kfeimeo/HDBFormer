@@ -74,27 +74,6 @@ def _transform_outputs(outputs):
     outputs = torch.cat(upsampled_outputs, dim=1)
     return outputs
 
-class VRLFusion(nn.Module):
-    """
-    VRL-style fusion: inject small residual into pretrained feature x using guidance e.
-    x := x + alpha * f([x, e, x*e])
-    """
-    def __init__(self, dim):
-        super().__init__()
-        self.fuse = nn.Sequential(
-            nn.Conv2d(dim * 3, dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(dim),
-            nn.ReLU(inplace=True),
-        )
-        # VRL residual scale (start near 0 to preserve pretrained behavior)
-        self.alpha = nn.Parameter(torch.ones(1) * 1e-3)
-
-    def forward(self, x, e):
-        # e is same shape/channel as x
-        delta = self.fuse(torch.cat([x, e, x * e], dim=1))
-        return x + self.alpha * delta
-
-
 class ChannelReducer(nn.Module):
     def __init__(self, in_channels):
         super(ChannelReducer, self).__init__()
@@ -120,10 +99,11 @@ class total_model(nn.Module):
         self.ffb3 = feature_fusion_block(dim=dim*4)
         self.ffb4 = feature_fusion_block(dim=dim*8)
         self.num_attentions = 2
-        self.vrl_fuse1 = VRLFusion(dim * 1)  # 128
-        self.vrl_fuse2 = VRLFusion(dim * 2)  # 256
-        self.vrl_fuse3 = VRLFusion(dim * 4)  # 512
-        self.vrl_fuse4 = VRLFusion(dim * 8)  # 1024
+        self.ChannelReducer1 = ChannelReducer(256)
+        self.ChannelReducer2 = ChannelReducer(512)
+        self.ChannelReducer3 = ChannelReducer(1024)
+        self.ChannelReducer4 = ChannelReducer(2048)
+
 
     def forward(self, x ,xx):
         out = self.encoder2(x)
@@ -131,11 +111,19 @@ class total_model(nn.Module):
         _, LD1, LD2, LD3, LD4 = self.LDFormer(xx)
         _,LI1, LI2, LI3, LI4 = self.LIFormer(x)
 
-        # Swin & LI features (same channel dims at each stage)
-        swin_b1 = self.vrl_fuse1(swin_b1, LI1)
-        swin_b2 = self.vrl_fuse2(swin_b2, LI2)
-        swin_b3 = self.vrl_fuse3(swin_b3, LI3)
-        swin_b4 = self.vrl_fuse4(swin_b4, LI4)
+        swin = [swin_b1, swin_b2, swin_b3, swin_b4]
+        LI = [LI1, LI2, LI3, LI4]
+
+        for i in range(len(swin)):
+            add = swin[i] + LI[i]
+            mlt = swin[i] * LI[i]
+            swin[i] = torch.cat([add, mlt], dim=1)
+        swin_b1, swin_b2, swin_b3, swin_b4 = swin
+
+        swin_b1 = self.ChannelReducer1(swin_b1)
+        swin_b2 = self.ChannelReducer2(swin_b2)
+        swin_b3 = self.ChannelReducer3(swin_b3)
+        swin_b4 = self.ChannelReducer4(swin_b4)
 
         for _ in range(self.num_attentions):
             swin_b1,LD1 = self.ffb1(swin_b1,LD1)
@@ -171,20 +159,10 @@ class EncoderDecoder(nn.Module):
 
 if __name__ == '__main__':
     print('#### Test Case ###')
-
     from torch.autograd import Variable
     rgb = Variable(torch.rand(1,3,480,640)).cuda()
     modal_x = Variable(torch.rand(1,3,480,640)).cuda()
     model = EncoderDecoder().cuda()
-    # forward一次，让gate的梯度路径走一遍（可选）
-    out = model(rgb, modal_x)
-
-    # 打印gate参数
-    print("ffb1 scale_x, scale_e:",
-          model.backbone.ffb1.scale_x.item(),
-          model.backbone.ffb1.scale_e.item())
-    print("vrl_fuse1 alpha:", model.backbone.vrl_fuse1.alpha.item())
-
 
 
 

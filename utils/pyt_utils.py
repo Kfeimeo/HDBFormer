@@ -176,7 +176,8 @@ def load_model(model, model_file, is_restore=False):
             name = 'module.' + k
             new_state_dict[name] = v
         state_dict = new_state_dict
-
+    print("incoming keys:", len(state_dict))
+    print("has encoder2 projection?", "backbone.encoder2.patch_embed.projection.weight" in state_dict)
     model.load_state_dict(state_dict, strict=True)
     ckpt_keys = set(state_dict.keys())
     own_keys = set(model.state_dict().keys())
