@@ -170,12 +170,17 @@ def load_model(model, model_file, is_restore=False):
         state_dict = model_file
     t_ioend = time.time()
 
-    if is_restore:
-        new_state_dict = OrderedDict()
-        for k, v in state_dict.items():
-            name = 'module.' + k
-            new_state_dict[name] = v
-        state_dict = new_state_dict
+    # --- fix: make state_dict prefix match the model ---
+    ckpt_has_module = any(k.startswith("module.") for k in state_dict.keys())
+    model_has_module = any(k.startswith("module.") for k in model.state_dict().keys())
+
+    if ckpt_has_module and not model_has_module:
+        # ckpt is DP/DDP, model is not
+        state_dict = {k[len("module."):]: v for k, v in state_dict.items()}
+    elif (not ckpt_has_module) and model_has_module:
+        # ckpt is not DP/DDP, model is
+        state_dict = {"module." + k: v for k, v in state_dict.items()}
+    # else: already matched, do nothing
     print("incoming keys:", len(state_dict))
     print("has encoder2 projection?", "backbone.encoder2.patch_embed.projection.weight" in state_dict)
     model.load_state_dict(state_dict, strict=True)

@@ -80,7 +80,7 @@ class PatchMerging(nn.Module):
 
         self.reduction = nn.Linear(sample_dim, out_channels, bias=bias)
 
-    def forward(self, x, hw_shape):
+    def forward(self, x, hw_shape, v_residual=None, return_v=False):
         """
         x: x.shape -> [B, H*W, C]
         hw_shape: (H, W)
@@ -267,7 +267,7 @@ class WindowMSA(nn.Module):
     def init_weights(self):
         trunc_normal_init(self.relative_position_bias_table, std=0.02)
 
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, v_residual=None, return_v=False):
         """
         Args:
             x (tensor): input features with shape of (num_windows*B, N, C)
@@ -279,6 +279,14 @@ class WindowMSA(nn.Module):
                                   C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[
             2]  # make torchscript happy (cannot use tensor as tuple)
+
+        # cache raw value (token space) for VRL
+        v_raw = v.transpose(1, 2).reshape(B, N, C)
+
+        # Value Residual Learning (VRL): add residual in value space before applying attention
+        if v_residual is not None:
+            v_res = v_residual.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+            v = v + v_res
 
         q = q * self.scale
         attn = (q @ k.transpose(-2, -1))
@@ -306,6 +314,8 @@ class WindowMSA(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
+        if return_v:
+            return x, v_raw
         return x
 
     @staticmethod
@@ -343,7 +353,7 @@ class ShiftWindowMSA(nn.Module):
 
         self.drop = dropout_layer
 
-    def forward(self, query, hw_shape):
+    def forward(self, query, hw_shape, v_residual=None, return_v=False):
         B, L, C = query.shape
         H, W = hw_shape
         assert L == H * W, 'input feature has wrong size'
@@ -353,6 +363,11 @@ class ShiftWindowMSA(nn.Module):
         pad_r = (self.window_size - W % self.window_size) % self.window_size
         pad_b = (self.window_size - H % self.window_size) % self.window_size
         query = F.pad(query, (0, 0, 0, pad_r, 0, pad_b))
+
+        v_residual_pad = None
+        if v_residual is not None:
+            v_residual_pad = v_residual.view(B, H, W, C)
+            v_residual_pad = F.pad(v_residual_pad, (0, 0, 0, pad_r, 0, pad_b))
         H_pad, W_pad = query.shape[1], query.shape[2]
 
         # cyclic shift
@@ -361,6 +376,15 @@ class ShiftWindowMSA(nn.Module):
                 query,
                 shifts=(-self.shift_size, -self.shift_size),
                 dims=(1, 2))
+
+            # calculate attention mask for SW-MSA
+
+            shifted_v_residual = None
+            if v_residual_pad is not None:
+                shifted_v_residual = torch.roll(
+                    v_residual_pad,
+                    shifts=(-self.shift_size, -self.shift_size),
+                    dims=(1, 2))
 
             # calculate attention mask for SW-MSA
             img_mask = torch.zeros((1, H_pad, W_pad, 1),
@@ -387,6 +411,7 @@ class ShiftWindowMSA(nn.Module):
                                                   attn_mask == 0, float(0.0))
         else:
             shifted_query = query
+            shifted_v_residual = v_residual_pad
             attn_mask = None
 
         # nW*B, window_size, window_size, C
@@ -394,8 +419,18 @@ class ShiftWindowMSA(nn.Module):
         # nW*B, window_size*window_size, C
         query_windows = query_windows.view(-1, self.window_size**2, C)
 
+        v_residual_windows = None
+        if shifted_v_residual is not None:
+            v_residual_windows = self.window_partition(shifted_v_residual)
+            v_residual_windows = v_residual_windows.view(-1, self.window_size**2, C)
+
         # W-MSA/SW-MSA (nW*B, window_size*window_size, C)
-        attn_windows = self.w_msa(query_windows, mask=attn_mask)
+        attn_out = self.w_msa(query_windows, mask=attn_mask, v_residual=v_residual_windows, return_v=return_v)
+
+        if return_v:
+            attn_windows, v_raw_windows = attn_out
+        else:
+            attn_windows = attn_out
 
         # merge windows
         attn_windows = attn_windows.view(-1, self.window_size,
@@ -415,9 +450,26 @@ class ShiftWindowMSA(nn.Module):
         if pad_r > 0 or pad_b:
             x = x[:, :H, :W, :].contiguous()
 
+        v_raw = None
+        if return_v:
+            v_raw_windows = v_raw_windows.view(-1, self.window_size, self.window_size, C)
+            shifted_v = self.window_reverse(v_raw_windows, H_pad, W_pad)
+            if self.shift_size > 0:
+                v_map = torch.roll(
+                    shifted_v,
+                    shifts=(self.shift_size, self.shift_size),
+                    dims=(1, 2))
+            else:
+                v_map = shifted_v
+            if pad_r > 0 or pad_b:
+                v_map = v_map[:, :H, :W, :].contiguous()
+            v_raw = v_map.view(B, H * W, C)
+
         x = x.view(B, H * W, C)
 
         x = self.drop(x)
+        if return_v:
+            return x, v_raw
         return x
 
     def window_reverse(self, windows, H, W):
@@ -478,17 +530,26 @@ class SwinBlock(nn.Module):
             act_layer=act_layer,
             add_identity=True)
 
-    def forward(self, x, hw_shape):
+    def forward(self, x, hw_shape, v_residual=None, return_v: bool = False):
+        # 你的 ShiftWindowMSA 很可能是 “不自带 add_identity”
+        # FFN 是 add_identity=True（内部会做残差）
+
         identity = x
         x = self.norm1(x)
-        x = self.attn(x, hw_shape)
 
-        x = x + identity
+        if return_v:
+            attn_out, v = self.attn(x, hw_shape, v_residual=v_residual, return_v=True)
+        else:
+            attn_out = self.attn(x, hw_shape, v_residual=v_residual, return_v=False)
+            v = None
 
-        identity = x
+        x = identity + attn_out
+
         x = self.norm2(x)
-        x = self.ffn(x, identity=identity)
+        x = self.ffn(x)  # FFN(add_identity=True) 内部会加残差
 
+        if return_v:
+            return x, v
         return x
 
 
@@ -506,8 +567,11 @@ class SwinBlockSequence(nn.Module):
                  drop_path_rate=0.,
                  downsample=None,
                  act_layer=None,
-                 norm_layer=None):
+                 norm_layer=None,
+                 use_vrl=False):
         super().__init__()
+
+        self.use_vrl = use_vrl
 
         drop_path_rate = drop_path_rate if isinstance(
             drop_path_rate,
@@ -534,8 +598,14 @@ class SwinBlockSequence(nn.Module):
         self.downsample = downsample
 
     def forward(self, x, hw_shape):
-        for block in self.blocks:
-            x = block(x, hw_shape)
+        if self.use_vrl and len(self.blocks) > 0:
+            # First block: cache raw value (value space) for VRL
+            x, v_first = self.blocks[0](x, hw_shape, return_v=True)
+            for block in self.blocks[1:]:
+                x = block(x, hw_shape, v_residual=v_first)
+        else:
+            for block in self.blocks:
+                x = block(x, hw_shape)
 
         if self.downsample:
             x_down, down_hw_shape = self.downsample(x, hw_shape)
@@ -564,8 +634,11 @@ class SwinTransformer(nn.Module):
                  drop_path_rate=0.1,
                  use_abs_pos_embed=False,
                  act_layer=nn.GELU,
-                 norm_layer=nn.LayerNorm):
+                 norm_layer=nn.LayerNorm,
+                 use_vrl=False):
         super(SwinTransformer, self).__init__()
+
+        self.use_vrl = use_vrl
 
         if isinstance(pretrain_img_size, int):
             pretrain_img_size = to_2tuple(pretrain_img_size)
@@ -631,7 +704,8 @@ class SwinTransformer(nn.Module):
                 drop_path_rate=dpr[:depths[i]],
                 downsample=downsample,
                 act_layer=act_layer,
-                norm_layer=norm_layer)
+                norm_layer=norm_layer,
+                use_vrl=self.use_vrl)
             self.stages.append(stage)
 
             dpr = dpr[depths[i]:]
@@ -682,8 +756,9 @@ class SwinTransformer(nn.Module):
 
 
 
-def swin_b(pretrained: bool = False, progress: bool = True):
+def swin_b(pretrained: bool = False, progress: bool = True, use_vrl: bool = False):
     my_swin = SwinTransformer(
+        use_vrl=use_vrl,
         embed_dims=128,
         depths=(2, 2, 18, 2),
         num_heads=(4, 8, 16, 32)
@@ -704,8 +779,9 @@ def swin_b(pretrained: bool = False, progress: bool = True):
     return my_swin
 
 
-def swin_s(pretrained: bool = False, progress: bool = True):
+def swin_s(pretrained: bool = False, progress: bool = True, use_vrl: bool = False):
     my_swin = SwinTransformer(
+        use_vrl=use_vrl,
         embed_dims=96,
         depths=(2, 2, 18, 2),
         num_heads=(3, 6, 12, 24)
@@ -726,8 +802,9 @@ def swin_s(pretrained: bool = False, progress: bool = True):
     return my_swin
 
 
-def swin_t(pretrained: bool = False, progress: bool = True):
+def swin_t(pretrained: bool = False, progress: bool = True, use_vrl: bool = False):
     my_swin = SwinTransformer(
+        use_vrl=use_vrl,
         embed_dims=96,
         depths=(2, 2, 6, 2),
         num_heads=(3, 6, 12, 24)

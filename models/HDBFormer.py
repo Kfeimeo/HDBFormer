@@ -88,9 +88,9 @@ class ChannelReducer(nn.Module):
         return x
 
 class total_model(nn.Module):
-    def __init__(self, dim, n_class, in_ch=3):
+    def __init__(self, dim, n_class, in_ch=3,use_vrl=True):
         super().__init__()
-        self.encoder2 = swin_b(pretrained=True)
+        self.encoder2 = swin_b(pretrained=True, use_vrl=use_vrl)
         self.LDFormer = LDFormer()
         self.LIFormer = LIFormer()
         self.final = nn.Conv2d(dim * 23, n_class, kernel_size=1, stride=1, padding=0)
@@ -137,10 +137,9 @@ class total_model(nn.Module):
         return output
 
 class EncoderDecoder(nn.Module):
-    def __init__(self, criterion=nn.CrossEntropyLoss(reduction='mean', ignore_index=255)):
+    def __init__(self, criterion=nn.CrossEntropyLoss(reduction='mean', ignore_index=255),use_vrl=True):
         super(EncoderDecoder, self).__init__()
-        # self.backbone = total_model(128, 40)
-        self.backbone = total_model(128, 40)
+        self.backbone = total_model(128, 40,use_vrl=use_vrl)
         self.criterion = criterion
 
     def encode_decode(self, rgb, modal_x):

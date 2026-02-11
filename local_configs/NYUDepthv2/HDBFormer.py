@@ -6,7 +6,7 @@ C.decoder_embed_dim = 512
 C.optimizer = "AdamW"
 
 """Train Config"""
-C.lr = 3e-5
+C.lr = 1e-6
 # C.lr = 1e-5
 C.lr_power = 0.9
 C.momentum = 0.9
