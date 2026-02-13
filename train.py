@@ -60,6 +60,7 @@ if __name__ == '__main__':
         )
         logger.info(f"val dataset len:{len(val_loader)*int(args.gpus)}")
 
+
         if (engine.distributed and (engine.local_rank == 0)) or (not engine.distributed):
             tb_dir = config.tb_dir + "/{}".format(
                 time.strftime("%b%d_%d-%H-%M", time.localtime())
@@ -77,9 +78,15 @@ if __name__ == '__main__':
         else:
             BatchNorm2d = nn.BatchNorm2d
 
+
+
         model = segmodel(
-            criterion=criterion
+            criterion=criterion,
+            use_vrl=True
         )
+        #启停按钮
+        model.set_depth_attention(enabled=False)
+
 
         base_lr = config.lr
         if engine.distributed:
@@ -178,14 +185,16 @@ if __name__ == '__main__':
 
                 minibatch = next(dataloader)
                 imgs = minibatch["data"]
+
                 gts = minibatch["label"]
                 modal_xs = minibatch["modal_x"]
 
                 imgs = imgs.cuda(non_blocking=True)
                 gts = gts.cuda(non_blocking=True)
                 modal_xs = modal_xs.cuda(non_blocking=True)
+                modal_x_raws = minibatch["modal_x_raw"].cuda(non_blocking=True)
 
-                loss = model(imgs, modal_xs, gts)
+                loss = model(imgs, modal_xs, gts, modal_x_raws)
 
                 # reduce the whole loss over multi-gpu
                 if engine.distributed:

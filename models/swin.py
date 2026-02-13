@@ -80,7 +80,7 @@ class PatchMerging(nn.Module):
 
         self.reduction = nn.Linear(sample_dim, out_channels, bias=bias)
 
-    def forward(self, x, hw_shape, v_residual=None, return_v=False):
+    def forward(self, x, hw_shape):
         """
         x: x.shape -> [B, H*W, C]
         hw_shape: (H, W)
@@ -363,12 +363,13 @@ class ShiftWindowMSA(nn.Module):
         pad_r = (self.window_size - W % self.window_size) % self.window_size
         pad_b = (self.window_size - H % self.window_size) % self.window_size
         query = F.pad(query, (0, 0, 0, pad_r, 0, pad_b))
+        H_pad, W_pad = query.shape[1], query.shape[2]
 
         v_residual_pad = None
         if v_residual is not None:
             v_residual_pad = v_residual.view(B, H, W, C)
             v_residual_pad = F.pad(v_residual_pad, (0, 0, 0, pad_r, 0, pad_b))
-        H_pad, W_pad = query.shape[1], query.shape[2]
+
 
         # cyclic shift
         if self.shift_size > 0:
@@ -378,7 +379,6 @@ class ShiftWindowMSA(nn.Module):
                 dims=(1, 2))
 
             # calculate attention mask for SW-MSA
-
             shifted_v_residual = None
             if v_residual_pad is not None:
                 shifted_v_residual = torch.roll(
@@ -427,7 +427,7 @@ class ShiftWindowMSA(nn.Module):
         # W-MSA/SW-MSA (nW*B, window_size*window_size, C)
         attn_out = self.w_msa(query_windows, mask=attn_mask, v_residual=v_residual_windows, return_v=return_v)
 
-        if return_v:
+        if return_v is not None:
             attn_windows, v_raw_windows = attn_out
         else:
             attn_windows = attn_out
@@ -543,7 +543,7 @@ class SwinBlock(nn.Module):
             attn_out = self.attn(x, hw_shape, v_residual=v_residual, return_v=False)
             v = None
 
-        x = identity + attn_out
+        x = identity+ attn_out
 
         x = self.norm2(x)
         x = self.ffn(x)  # FFN(add_identity=True) 内部会加残差
@@ -823,18 +823,3 @@ def swin_t(pretrained: bool = False, progress: bool = True, use_vrl: bool = Fals
             state_dict = state_dict_new
         my_swin.load_state_dict(state_dict, strict=False) #strict=True
     return my_swin
-
-
-if __name__ == '__main__':
-    model = swin_l(pretrained=True)
-    # print(model)
-    img = torch.rand((1, 3, 512, 512))
-    feat = model(img)
-    for item in feat:
-        print(item.shape)
-
-    from thop import profile
-
-    flops, params = profile(model, inputs=(img,), verbose=False)
-    print("FLOPS:", flops / 1e9)
-    print("PARAMS:", params / 1e6)

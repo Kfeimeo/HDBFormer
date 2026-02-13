@@ -26,46 +26,69 @@ def random_scale(rgb, gt, modal_x, scales):
     return rgb, gt, modal_x, scale
 
 class TrainPre(object):
-    def __init__(self, norm_mean, norm_std,sign=False,config=None):
-        self.config=config
+    def __init__(self, norm_mean, norm_std, sign=False, config=None):
+        self.config = config
         self.norm_mean = norm_mean
         self.norm_std = norm_std
-        self.sign =sign
+        self.sign = sign
 
     def __call__(self, rgb, gt, modal_x):
         rgb, gt, modal_x = random_mirror(rgb, gt, modal_x)
         if self.config.train_scale_array is not None:
             rgb, gt, modal_x, scale = random_scale(rgb, gt, modal_x, self.config.train_scale_array)
 
+        # ✅ 1) 保存 raw（注意：这里还是 HWC、未 normalize）
+        modal_x_raw = modal_x.copy()
+
+        # 原有 normalize
         rgb = normalize(rgb, self.norm_mean, self.norm_std)
         if self.sign:
-            modal_x = normalize(modal_x, [0.48,0.48,0.48], [0.28,0.28,0.28])#[0.5,0.5,0.5]
+            modal_x = normalize(modal_x, [0.48,0.48,0.48], [0.28,0.28,0.28])
         else:
             modal_x = normalize(modal_x, self.norm_mean, self.norm_std)
 
-        # crop_size = (self.config.image_height, self.config.image_width)\
-        crop_size =(512,512)
+        crop_size = (512, 512)
         crop_pos = generate_random_crop_pos(rgb.shape[:2], crop_size)
 
         p_rgb, _ = random_crop_pad_to_shape(rgb, crop_pos, crop_size, 0)
         p_gt, _ = random_crop_pad_to_shape(gt, crop_pos, crop_size, 255)
         p_modal_x, _ = random_crop_pad_to_shape(modal_x, crop_pos, crop_size, 0)
 
+        # ✅ 2) raw 走同样 crop/pad（pad 值建议 0）
+        p_modal_x_raw, _ = random_crop_pad_to_shape(modal_x_raw, crop_pos, crop_size, 0)
+
+        # CHW
         p_rgb = p_rgb.transpose(2, 0, 1)
         p_modal_x = p_modal_x.transpose(2, 0, 1)
-        
-        return p_rgb, p_gt, p_modal_x
+        p_modal_x_raw = p_modal_x_raw.transpose(2, 0, 1)
+
+        return p_rgb, p_gt, p_modal_x, p_modal_x_raw
 
 class ValPre(object):
-    def __init__(self, norm_mean, norm_std,sign=False,config=None):
-        self.config=config
+    def __init__(self, norm_mean, norm_std, sign=False, config=None):
+        self.config = config
         self.norm_mean = norm_mean
         self.norm_std = norm_std
-        self.sign =sign
+        self.sign = sign
+
     def __call__(self, rgb, gt, modal_x):
+        # ✅ 1) 保存 raw depth（HWC，未 normalize）
+        modal_x_raw = modal_x.copy()
+
+        # ✅ 2) normalize（和原逻辑一致）
         rgb = normalize(rgb, self.norm_mean, self.norm_std)
-        modal_x = normalize(modal_x, [0.48,0.48,0.48], [0.28,0.28,0.28])
-        return rgb.transpose(2, 0, 1), gt, modal_x.transpose(2, 0, 1)
+
+        if self.sign:
+            modal_x = normalize(modal_x, [0.48,0.48,0.48], [0.28,0.28,0.28])
+        else:
+            modal_x = normalize(modal_x, self.norm_mean, self.norm_std)
+
+        # ✅ 3) 转 CHW
+        rgb = rgb.transpose(2, 0, 1)
+        modal_x = modal_x.transpose(2, 0, 1)
+        modal_x_raw = modal_x_raw.transpose(2, 0, 1)
+
+        return rgb, gt, modal_x, modal_x_raw
 
 def get_train_loader(engine, dataset,config):
     data_setting = {'rgb_root': config.rgb_root_folder,

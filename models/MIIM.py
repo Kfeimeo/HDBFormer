@@ -30,7 +30,7 @@ class LayerNorm(nn.Module):
             return x
 
 class GFA(nn.Module):
-    def __init__(self, num_head, dim):
+    def __init__(self, num_head, dim, use_depth_bias=False):
         super().__init__()
         self.num_head = num_head
         self.pool = nn.AdaptiveAvgPool2d(output_size=(6, 6))
@@ -39,8 +39,19 @@ class GFA(nn.Module):
         self.kv = nn.Linear(dim, dim)
         self.x_e_linear = nn.Linear(dim * 2, dim // 2)
         self.window = 6
+        kx = torch.tensor([[1, 0, -1], [2, 0, -2], [1, 0, -1]], dtype=torch.float32).view(1, 1, 3, 3) / 8
+        ky = kx.transpose(2, 3)
+        self.register_buffer("sobel_x", kx)
+        self.register_buffer("sobel_y", ky)
 
-    def forward(self, x, x_e):
+    def _sobel_edge(self, d):
+        # d: [B,1,H,W]
+        gx = F.conv2d(d, self.sobel_x, padding=1)
+        gy = F.conv2d(d, self.sobel_y, padding=1)
+        edge = torch.sqrt(gx * gx + gy * gy + 1e-6)
+        return torch.clamp(edge, max=0.1)
+
+    def forward(self, x, x_e, depth_like=None):
         B, H, W, C = x.size()
         x_e = torch.cat([x, x_e], dim=3)
         x_e = x_e.permute(0, 3, 1, 2)
@@ -58,8 +69,18 @@ class GFA(nn.Module):
         x_e = x_e.reshape(B, -1, self.num_head, C // self.num_head // 2).permute(0, 2, 1, 3)
         m = x_e
 
-        attn = (m * (C // self.num_head // 2) ** -0.5) @ k.transpose(-2, -1)
-        attn = attn.softmax(dim=-1)
+        logits = (m * (C // self.num_head // 2) ** -0.5) @ k.transpose(-2, -1)
+        if self.use_depth_bias and (depth_like is not None):
+            edge = self._sobel_edge(depth_like)  # [B,1,H,W]
+            edge_q = F.adaptive_avg_pool2d(edge, (6, 6)).flatten(2)  # [B,1,36]
+            edge_k = edge.flatten(2)  # [B,1,HW]
+
+            lambda_e = 0.5
+            bias = -lambda_e * torch.abs(edge_q.unsqueeze(-1) - edge_k.unsqueeze(2))  # [B,1,36,HW]
+            bias = bias.expand(-1, self.num_head, -1, -1)  # [B,head,36,HW]
+            logits = logits + bias
+
+        attn = logits.softmax(dim=-1)
         attn = (attn @ v).reshape(B, self.num_head, self.window, self.window, C // self.num_head // 2).permute(0, 1, 4, 2, 3).reshape(B, C // 2, self.window, self.window)
         attn = F.interpolate(attn, (H, W), mode='bilinear', align_corners=False).permute(0, 2, 3, 1)
 
@@ -83,31 +104,38 @@ class feature_fusion_block(nn.Module):
     def __init__(self, dim, num_head=8):
         super().__init__()
         self.num_head = num_head
-        self.proj = nn.Linear(dim * 3 //2, dim)
-        self.proj_e = nn.Linear(dim * 3 //2, dim)
+        self.proj = nn.Linear(dim * 3 // 2, dim)
+        self.proj_e = nn.Linear(dim * 3 // 2, dim)
         self.norm = LayerNorm(dim, eps=1e-6, data_format="channels_last")
         self.norm_e = LayerNorm(dim, eps=1e-6, data_format="channels_last")
-        self.GFA = GFA(self.num_head,dim)
+        self.GFA = GFA(self.num_head, dim)
         self.LFA = LFA(dim)
 
-    def forward(self, x, x_e):
+    def forward(self, x, x_e, depth_like=None):
+        # x, x_e: [B,C,H,W] -> [B,H,W,C]
         x = x.transpose(1, 3).transpose(1, 2)
         x_e = x_e.transpose(1, 3).transpose(1, 2)
-
 
         x = self.norm(x)
         x_e = self.norm_e(x_e)
 
-        gfa1 = self.GFA(x, x_e)
+        #  depth resize到当前特征分辨率
+        depth_resized = None
+        if depth_like is not None and depth_like.size(1) == 3:
+            depth_like = depth_like[:, :1]
+            H, W = x.shape[1], x.shape[2]
+            depth_resized = F.interpolate(depth_like, size=(H, W), mode='bilinear', align_corners=False)
+
+        gfa1 = self.GFA(x, x_e, depth_like=depth_resized)
 
         lfa1 = self.LFA(x, x_e)
         lfa2 = self.LFA(x_e, x)
 
-        x = torch.cat([ gfa1, lfa1,lfa2], dim=3)
+        x_cat = torch.cat([gfa1, lfa1, lfa2], dim=3)
 
-        x_e = self.proj_e(x)
-        x = self.proj(x)
+        x_e = self.proj_e(x_cat)
+        x = self.proj(x_cat)
 
-        x = x.permute(0, 3, 1, 2)
+        x = x.permute(0, 3, 1, 2)   # back to [B,C,H,W]
         x_e = x_e.permute(0, 3, 1, 2)
         return x, x_e

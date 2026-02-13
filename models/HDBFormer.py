@@ -4,7 +4,8 @@ from .swin import (swin_t,swin_b)
 torch.cuda.empty_cache()
 import torch.nn.functional as F
 from thop import profile
-from .MIIM import feature_fusion_block
+from .MIIM import feature_fusion_block, GFA
+
 
 class LDFormer(nn.Module):
     def __init__(self, channels=[3, 64, 128, 256, 512, 1024]):
@@ -88,7 +89,7 @@ class ChannelReducer(nn.Module):
         return x
 
 class total_model(nn.Module):
-    def __init__(self, dim, n_class, in_ch=3,use_vrl=True):
+    def __init__(self, dim, n_class, in_ch=3,use_vrl=False):
         super().__init__()
         self.encoder2 = swin_b(pretrained=True, use_vrl=use_vrl)
         self.LDFormer = LDFormer()
@@ -105,7 +106,7 @@ class total_model(nn.Module):
         self.ChannelReducer4 = ChannelReducer(2048)
 
 
-    def forward(self, x ,xx):
+    def forward(self, x ,xx,x_raw=None):
         out = self.encoder2(x)
         swin_b1, swin_b2, swin_b3, swin_b4 = out[0], out[1], out[2], out[3]
         _, LD1, LD2, LD3, LD4 = self.LDFormer(xx)
@@ -125,11 +126,22 @@ class total_model(nn.Module):
         swin_b3 = self.ChannelReducer3(swin_b3)
         swin_b4 = self.ChannelReducer4(swin_b4)
 
+        #  1) 准备 depth_like（1通道）
+        depth_like = None
+        if x_raw is not None:
+            # x_raw 预计是 [B,3,H,W]（你 Dataset 里是 3 通道 merge）
+            if x_raw.dim() == 4:
+                depth_like = x_raw[:, :1]  # 取第一个通道当 depth-like
+            elif x_raw.dim() == 3:
+                depth_like = x_raw.unsqueeze(1)
+            else:
+                raise ValueError(f"Unexpected x_raw shape: {x_raw.shape}")
+
         for _ in range(self.num_attentions):
-            swin_b1,LD1 = self.ffb1(swin_b1,LD1)
-            swin_b2,LD2 = self.ffb2(swin_b2,LD2)
-            swin_b3,LD3 = self.ffb3(swin_b3,LD3)
-            swin_b4,LD4 = self.ffb4(swin_b4,LD4)
+            swin_b1, LD1 = self.ffb1(swin_b1, LD1, depth_like=depth_like)
+            swin_b2, LD2 = self.ffb2(swin_b2, LD2, depth_like=depth_like)
+            swin_b3, LD3 = self.ffb3(swin_b3, LD3, depth_like=depth_like)
+            swin_b4, LD4 = self.ffb4(swin_b4, LD4, depth_like=depth_like)
 
         outputs = [swin_b1,swin_b2,swin_b3,swin_b4,LI4]
         outputs = _transform_outputs(outputs)
@@ -137,19 +149,24 @@ class total_model(nn.Module):
         return output
 
 class EncoderDecoder(nn.Module):
-    def __init__(self, criterion=nn.CrossEntropyLoss(reduction='mean', ignore_index=255),use_vrl=True):
+    def __init__(self, criterion=nn.CrossEntropyLoss(reduction='mean', ignore_index=255),use_vrl=False):
         super(EncoderDecoder, self).__init__()
         self.backbone = total_model(128, 40,use_vrl=use_vrl)
         self.criterion = criterion
 
-    def encode_decode(self, rgb, modal_x):
+    def set_depth_attention(self, enabled: bool):
+        for m in self.modules():
+            if isinstance(m, GFA):
+                m.use_depth_bias = enabled
+
+    def encode_decode(self, rgb, modal_x,modal_x_raw=None):
         orisize = rgb.shape
-        out = self.backbone(rgb, modal_x)
+        out = self.backbone(rgb, modal_x,x_raw=modal_x_raw)
         out = F.interpolate(out, size=orisize[-2:], mode='bilinear', align_corners=False)
         return out
 
-    def forward(self, rgb, modal_x=None, label=None):
-        out = self.encode_decode(rgb, modal_x)
+    def forward(self, rgb, modal_x=None, label=None, modal_x_raw=None):
+        out = self.encode_decode(rgb, modal_x,modal_x_raw=modal_x_raw)
         if label is not None:
             loss = self.criterion(out, label.long())
             return loss
@@ -161,7 +178,7 @@ if __name__ == '__main__':
     from torch.autograd import Variable
     rgb = Variable(torch.rand(1,3,480,640)).cuda()
     modal_x = Variable(torch.rand(1,3,480,640)).cuda()
-    model = EncoderDecoder().cuda()
+    model = EncoderDecoder(use_vrl=True).cuda()
 
 
 
