@@ -157,121 +157,51 @@ def evaluate(model, dataloader, config, device, engine, save_dir=None):
 
 
 @torch.no_grad()
-def evaluate_msf(
-    model, dataloader, config, device, scales, flip, engine, save_dir=None
-):
+def evaluate_msf(model, dataloader, n_classes, background, device, scales, flip, save_dir=None):
     model.eval()
-
-    n_classes = config.num_classes
-    metrics = Metrics(n_classes, config.background, device)
+    metrics = Metrics(n_classes, background, device)
 
     for minibatch in tqdm(dataloader):
-        images = minibatch["data"]
-        labels = minibatch["label"]
-        modal_xs = minibatch["modal_x"]
-        # print(images.shape,labels.shape)
+        images = minibatch["data"][0]
+        labels = minibatch["label"][0]
+        modal_xs = minibatch["modal_x"][0]
+
         images = [images.to(device), modal_xs.to(device)]
         labels = labels.to(device)
+
+        # SUNRGBD 有时 label 是 [B,1,H,W]，稳健起见 squeeze
+        if labels.dim() == 4 and labels.size(1) == 1:
+            labels = labels.squeeze(1)
+
         B, H, W = labels.shape
-        scaled_logits = torch.zeros(B, n_classes, H, W).to(device)
+        scaled_logits = None
 
         for scale in scales:
             new_H, new_W = int(scale * H), int(scale * W)
-            new_H, new_W = (
-                int(math.ceil(new_H / 32)) * 32,
-                int(math.ceil(new_W / 32)) * 32,
-            )
+            new_H = int(math.ceil(new_H / 32)) * 32
+            new_W = int(math.ceil(new_W / 32)) * 32
+
             scaled_images = [
-                F.interpolate(
-                    img, size=(new_H, new_W), mode="bilinear", align_corners=True
-                )
+                F.interpolate(img, size=(new_H, new_W), mode="bilinear", align_corners=False)
                 for img in images
             ]
-            scaled_images = [scaled_img.to(device) for scaled_img in scaled_images]
+
             logits = model(scaled_images[0], scaled_images[1])
-            logits = F.interpolate(
-                logits, size=(H, W), mode="bilinear", align_corners=True
-            )
-            scaled_logits += logits.softmax(dim=1)
+            logits = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
+
+            prob = logits.softmax(dim=1)
+            scaled_logits = prob.clone() if scaled_logits is None else (scaled_logits + prob)
 
             if flip:
-                scaled_images = [
-                    torch.flip(scaled_img, dims=(3,)) for scaled_img in scaled_images
-                ]
-                logits = model(scaled_images[0], scaled_images[1])
+                flipped = [torch.flip(im, dims=(3,)) for im in scaled_images]
+                logits = model(flipped[0], flipped[1])
                 logits = torch.flip(logits, dims=(3,))
-                logits = F.interpolate(
-                    logits, size=(H, W), mode="bilinear", align_corners=True
-                )
+                logits = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
                 scaled_logits += logits.softmax(dim=1)
-
-        if save_dir is not None:
-            palette = [
-                [128, 64, 128],
-                [244, 35, 232],
-                [70, 70, 70],
-                [102, 102, 156],
-                [190, 153, 153],
-                [153, 153, 153],
-                [250, 170, 30],
-                [220, 220, 0],
-                [107, 142, 35],
-                [152, 251, 152],
-                [70, 130, 180],
-                [220, 20, 60],
-                [255, 0, 0],
-                [0, 0, 142],
-                [0, 0, 70],
-                [0, 60, 100],
-                [0, 80, 100],
-                [0, 0, 230],
-                [119, 11, 32],
-            ]
-            palette = np.array(palette, dtype=np.uint8)
-            cmap = ListedColormap(palette)
-            names = (
-                minibatch["fn"][0]
-                .replace(".jpg", "")
-                .replace(".png", "")
-                .replace("datasets/", "")
-            )
-            save_name = save_dir + "/" + names + "_pred.png"
-            pathlib.Path(save_name).parent.mkdir(parents=True, exist_ok=True)
-            preds = scaled_logits.argmax(dim=1).cpu().squeeze().numpy().astype(np.uint8)
-            if config.dataset_name in ["KITTI-360", "EventScape"]:
-                preds = palette[preds]
-                plt.imsave(save_name, preds)
-            elif config.dataset_name in ["NYUDepthv2" , "MFNet" , "SUNRGBD"]:
-                palette = np.load("./utils/nyucmap.npy")
-                preds = palette[preds]
-                plt.imsave(save_name, preds)
-            elif config.dataset_name in ["PST900"]:
-                palette = np.array(
-                    [
-                        [0, 0, 0],
-                        [64, 0, 128],
-                        [64, 64, 0],
-                        [0, 128, 192],
-                    ],
-                    dtype=np.uint8,
-                )
-                preds = palette[preds]
-                plt.imsave(save_name, preds)
-            else:
-                assert 1 == 2
 
         metrics.update(scaled_logits, labels)
 
-    # ious, miou = metrics.compute_iou()
-    # acc, macc = metrics.compute_pixel_acc()
-    # f1, mf1 = metrics.compute_f1()
-    if engine.distributed:
-        all_metrics = [None for _ in range(engine.world_size)]
-        # all_predictions = Metrics(n_classes, config.background, device)
-        torch.distributed.all_gather_object(all_metrics, metrics)  # list of lists
-    else:
-        all_metrics = metrics
-    return all_metrics
+    return metrics
 
 
 def main(cfg):

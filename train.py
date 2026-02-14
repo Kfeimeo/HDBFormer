@@ -27,7 +27,7 @@ from tensorboardX import SummaryWriter
 import random
 import numpy as np
 from utils.val_mm import evaluate, evaluate_msf
-
+from local_configs._base_ import C
 # from eval import evaluate_mid
 
 torch.backends.cudnn.enabled = True
@@ -49,29 +49,29 @@ if __name__ == '__main__':
     with Engine(custom_parser=parser) as engine:
         args = parser.parse_args()
         exec("from " + args.config + " import C as config")
-        logger = get_logger(config.log_dir, config.log_file)
+        logger = get_logger(C.log_dir, C.log_file)
 
         cudnn.benchmark = True
 
-        train_loader, train_sampler = get_train_loader(engine, RGBXDataset, config)
+        train_loader, train_sampler = get_train_loader(engine, RGBXDataset, C)
 
         val_loader, val_sampler = get_val_loader(
-            engine, RGBXDataset, config, int(args.gpus)
+            engine, RGBXDataset, C, int(args.gpus)
         )
         logger.info(f"val dataset len:{len(val_loader)*int(args.gpus)}")
 
 
         if (engine.distributed and (engine.local_rank == 0)) or (not engine.distributed):
-            tb_dir = config.tb_dir + "/{}".format(
+            tb_dir = C.tb_dir + "/{}".format(
                 time.strftime("%b%d_%d-%H-%M", time.localtime())
             )
-            generate_tb_dir = config.tb_dir + "/tb"
+            generate_tb_dir = C.tb_dir + "/tb"
             tb = SummaryWriter(log_dir=tb_dir)
             engine.link_tb(tb_dir, generate_tb_dir)
             pp = pprint.PrettyPrinter(indent=4)
-            logger.info("config: \n" + pp.pformat(config))
+            logger.info("config: \n" + pp.pformat(C))
 
-        criterion = nn.CrossEntropyLoss(reduction="mean", ignore_index=config.background)
+        criterion = nn.CrossEntropyLoss(reduction="mean", ignore_index=C.background)
 
         if engine.distributed:
             BatchNorm2d = nn.SyncBatchNorm
@@ -88,36 +88,36 @@ if __name__ == '__main__':
         model.set_depth_attention(enabled=False)
 
 
-        base_lr = config.lr
+        base_lr = C.lr
         if engine.distributed:
-            base_lr = config.lr
+            base_lr = C.lr
 
         params_list = []
         params_list = group_weight(params_list, model, BatchNorm2d, base_lr)
 
-        if config.optimizer == "AdamW":
+        if C.optimizer == "AdamW":
             optimizer = torch.optim.AdamW(
                 params_list,
                 lr=base_lr,
                 betas=(0.9, 0.999),
-                weight_decay=config.weight_decay,
+                weight_decay=C.weight_decay,
             )
-        elif config.optimizer == "SGDM":
+        elif C.optimizer == "SGDM":
             optimizer = torch.optim.SGD(
                 params_list,
                 lr=base_lr,
-                momentum=config.momentum,
-                weight_decay=config.weight_decay,
+                momentum=C.momentum,
+                weight_decay=C.weight_decay,
             )
         else:
             raise NotImplementedError
 
-        total_iteration = config.nepochs * config.niters_per_epoch
+        total_iteration = C.nepochs * C.niters_per_epoch
         lr_policy = WarmUpPolyLR(
             base_lr,
-            config.lr_power,
+            C.lr_power,
             total_iteration,
-            config.niters_per_epoch * config.warm_up_epoch,
+            C.niters_per_epoch * C.warm_up_epoch,
         )
 
         if engine.distributed:
@@ -143,18 +143,18 @@ if __name__ == '__main__':
         logger.info("begin trainning:")
         best_miou = 0.0
         data_setting = {
-            "rgb_root": config.rgb_root_folder,
-            "rgb_format": config.rgb_format,
-            "gt_root": config.gt_root_folder,
-            "gt_format": config.gt_format,
-            "transform_gt": config.gt_transform,
-            "x_root": config.x_root_folder,
-            "x_format": config.x_format,
-            "x_single_channel": config.x_is_single_channel,
-            "class_names": config.class_names,
-            "train_source": config.train_source,
-            "eval_source": config.eval_source,
-            "class_names": config.class_names,
+            "rgb_root": C.rgb_root_folder,
+            "rgb_format": C.rgb_format,
+            "gt_root": C.gt_root_folder,
+            "gt_format": C.gt_format,
+            "transform_gt": C.gt_transform,
+            "x_root": C.x_root_folder,
+            "x_format": C.x_format,
+            "x_single_channel": C.x_is_single_channel,
+            "class_names": C.class_names,
+            "train_source": C.train_source,
+            "eval_source": C.eval_source,
+            "class_names": C.class_names,
         }
         # val_pre = ValPre()
         # val_dataset = RGBXDataset(data_setting, 'val', val_pre)
@@ -167,14 +167,14 @@ if __name__ == '__main__':
 
         miou, best_miou = 0.0, 0.0
 
-        for epoch in range(engine.state.epoch, config.nepochs + 1):
+        for epoch in range(engine.state.epoch, C.nepochs + 1):
 
             model.train()
             if engine.distributed:
                 train_sampler.set_epoch(epoch)
             bar_format = "{desc}[{elapsed}<{remaining},{rate_fmt}]"
             pbar = tqdm(
-                range(config.niters_per_epoch), file=sys.stdout, bar_format=bar_format
+                range(C.niters_per_epoch), file=sys.stdout, bar_format=bar_format
             )
             dataloader = iter(train_loader)
 
@@ -204,7 +204,7 @@ if __name__ == '__main__':
                 loss.backward()
                 optimizer.step()
 
-                current_idx = (epoch - 1) * config.niters_per_epoch + idx
+                current_idx = (epoch - 1) * C.niters_per_epoch + idx
                 lr = lr_policy.get_lr(current_idx)
 
                 for i in range(len(optimizer.param_groups)):
@@ -213,8 +213,8 @@ if __name__ == '__main__':
                 if engine.distributed:
                     sum_loss += reduce_loss.item()
                     print_str = (
-                        "Epoch {}/{}".format(epoch, config.nepochs)
-                        + " Iter {}/{}:".format(idx + 1, config.niters_per_epoch)
+                        "Epoch {}/{}".format(epoch, C.nepochs)
+                        + " Iter {}/{}:".format(idx + 1, C.niters_per_epoch)
                         + " lr=%.4e" % lr
                         + " loss=%.4f total_loss=%.4f"
                         % (reduce_loss.item(), (sum_loss / (idx + 1)))
@@ -223,8 +223,8 @@ if __name__ == '__main__':
                 else:
                     sum_loss += loss
                     print_str = (
-                        "Epoch {}/{}".format(epoch, config.nepochs)
-                        + " Iter {}/{}:".format(idx + 1, config.niters_per_epoch)
+                        "Epoch {}/{}".format(epoch, C.nepochs)
+                        + " Iter {}/{}:".format(idx + 1, C.niters_per_epoch)
                         + " lr=%.4e" % lr
                         + " loss=%.4f total_loss=%.4f" % (loss, (sum_loss / (idx + 1)))
                     )
@@ -239,7 +239,7 @@ if __name__ == '__main__':
             logger.info(print_str)
 
             if (
-                epoch % 1 == 0 and epoch > int(config.checkpoint_start_epoch)
+                epoch % 1 == 0 and epoch > int(C.checkpoint_start_epoch)
             ) or epoch == 1:
                 torch.cuda.empty_cache()
                 if engine.distributed:
@@ -249,7 +249,7 @@ if __name__ == '__main__':
                         all_metrics = evaluate_msf(
                             model,
                             val_loader,
-                            config,
+                            C,
                             device,
                             [0.5, 0.75, 1.0, 1.25, 1.5],
                             True,
@@ -266,9 +266,9 @@ if __name__ == '__main__':
                             if miou > best_miou:
                                 best_miou = miou
                                 engine.save_and_link_checkpoint(
-                                    config.log_dir,
-                                    config.log_dir,
-                                    config.log_dir_link,
+                                    C.log_dir,
+                                    C.log_dir,
+                                    C.log_dir_link,
                                     infor="_miou_" + str(miou),
                                     metric=miou,
                                 )
@@ -277,14 +277,15 @@ if __name__ == '__main__':
                     with torch.no_grad():
                         model.eval()
                         device = torch.device("cuda")
-                        metric = evaluate_msf(
-                            model,
-                            val_loader,
-                            config,
-                            device,
-                            [0.5, 0.75, 1.0, 1.25, 1.5],
-                            True,
-                            engine,
+                        metrics = evaluate_msf(
+                            model=model,
+                            dataloader=dataloader,
+                            n_classes=C.n_classes,
+                            background=C["DATASET"].get("BACKGROUND", 255),  # 按你配置实际字段
+                            device=device,
+                            scales=C["MSF"]["SCALES"],
+                            flip=C["MSF"]["FLIP"],
+                            save_dir=None
                         )
                         ious, miou = metric.compute_iou()
                         total_acc = metric.compute_total_pixel_acc()
@@ -296,9 +297,9 @@ if __name__ == '__main__':
                     if miou > best_miou:
                         best_miou = miou
                         engine.save_and_link_checkpoint(
-                            config.log_dir,
-                            config.log_dir,
-                            config.log_dir_link,
+                            C.log_dir,
+                            C.log_dir,
+                            C.log_dir_link,
                             infor="_miou_" + str(miou),
                             metric=miou,
                         )
