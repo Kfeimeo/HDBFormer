@@ -156,6 +156,22 @@ def evaluate(model, dataloader, config, device, engine, save_dir=None):
     return all_metrics
 
 
+def _to_nchw(x: torch.Tensor) -> torch.Tensor:
+    # 允许 (H,W) / (C,H,W) / (N,C,H,W) / (N,H,W,C)
+    if x.dim() == 2:  # (H,W)
+        return x.unsqueeze(0).unsqueeze(0)
+    if x.dim() == 3:  # (C,H,W) 或 (H,W,C)
+        if x.shape[0] in (1, 3):  # assume (C,H,W)
+            return x.unsqueeze(0)
+        else:  # assume (H,W,C)
+            return x.permute(2, 0, 1).unsqueeze(0)
+    if x.dim() == 4:
+        # (N,H,W,C) -> (N,C,H,W)
+        if x.shape[-1] in (1, 3) and x.shape[1] not in (1, 3):
+            return x.permute(0, 3, 1, 2)
+        return x
+    raise ValueError(f"Unsupported tensor shape for interpolate: {tuple(x.shape)}")
+
 @torch.no_grad()
 def evaluate_msf(model, dataloader, n_classes, background, device, scales, flip, save_dir=None):
     model.eval()

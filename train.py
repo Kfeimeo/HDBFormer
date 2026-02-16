@@ -82,7 +82,7 @@ if __name__ == '__main__':
 
         model = segmodel(
             criterion=criterion,
-            use_vrl=True
+            use_vrl=False
         )
         #启停按钮
         model.set_depth_attention(enabled=False)
@@ -277,16 +277,17 @@ if __name__ == '__main__':
                     with torch.no_grad():
                         model.eval()
                         device = torch.device("cuda")
-                        metrics = evaluate_msf(
+                        metric = evaluate_msf(
                             model=model,
                             dataloader=dataloader,
-                            n_classes=C.n_classes,
-                            background=C["DATASET"].get("BACKGROUND", 255),  # 按你配置实际字段
+                            n_classes=C.num_classes,
+                            background=C.background,  # 按你配置实际字段
                             device=device,
-                            scales=C["MSF"]["SCALES"],
-                            flip=C["MSF"]["FLIP"],
+                            scales=C.train_scale_array,
+                            flip=C.eval_flip,
                             save_dir=None
                         )
+
                         ious, miou = metric.compute_iou()
                         total_acc = metric.compute_total_pixel_acc()
                         f1, mf1 = metric.compute_f1()

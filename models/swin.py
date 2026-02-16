@@ -353,125 +353,125 @@ class ShiftWindowMSA(nn.Module):
 
         self.drop = dropout_layer
 
-    def forward(self, query, hw_shape, v_residual=None, return_v=False):
+    def forward(self, query, hw_shape, v_residual=None, return_v: bool = False):
         B, L, C = query.shape
         H, W = hw_shape
         assert L == H * W, 'input feature has wrong size'
         query = query.view(B, H, W, C)
 
-        # pad feature maps to multiples of window size
+        # --------- 1) pad feature maps to multiples of window size ----------
         pad_r = (self.window_size - W % self.window_size) % self.window_size
         pad_b = (self.window_size - H % self.window_size) % self.window_size
         query = F.pad(query, (0, 0, 0, pad_r, 0, pad_b))
         H_pad, W_pad = query.shape[1], query.shape[2]
 
-        v_residual_pad = None
+        # v_residual: (B, H*W, C) -> (B, H, W, C) and pad same way
         if v_residual is not None:
-            v_residual_pad = v_residual.view(B, H, W, C)
-            v_residual_pad = F.pad(v_residual_pad, (0, 0, 0, pad_r, 0, pad_b))
+            assert v_residual.shape[0] == B and v_residual.shape[1] == H * W and v_residual.shape[2] == C, \
+                f"v_residual shape should be (B, H*W, C)=({B},{H * W},{C}), got {tuple(v_residual.shape)}"
+            v_residual_map = v_residual.view(B, H, W, C)
+            v_residual_map = F.pad(v_residual_map, (0, 0, 0, pad_r, 0, pad_b))
+        else:
+            v_residual_map = None
 
-
-        # cyclic shift
+        # --------- 2) cyclic shift + mask ----------
         if self.shift_size > 0:
             shifted_query = torch.roll(
                 query,
                 shifts=(-self.shift_size, -self.shift_size),
                 dims=(1, 2))
 
-            # calculate attention mask for SW-MSA
-            shifted_v_residual = None
-            if v_residual_pad is not None:
-                shifted_v_residual = torch.roll(
-                    v_residual_pad,
+            if v_residual_map is not None:
+                shifted_vres = torch.roll(
+                    v_residual_map,
                     shifts=(-self.shift_size, -self.shift_size),
                     dims=(1, 2))
+            else:
+                shifted_vres = None
 
             # calculate attention mask for SW-MSA
-            img_mask = torch.zeros((1, H_pad, W_pad, 1),
-                                   device=query.device)  # 1 H W 1
+            img_mask = torch.zeros((1, H_pad, W_pad, 1), device=query.device)  # 1 H W 1
             h_slices = (slice(0, -self.window_size),
-                        slice(-self.window_size,
-                              -self.shift_size), slice(-self.shift_size, None))
+                        slice(-self.window_size, -self.shift_size),
+                        slice(-self.shift_size, None))
             w_slices = (slice(0, -self.window_size),
-                        slice(-self.window_size,
-                              -self.shift_size), slice(-self.shift_size, None))
+                        slice(-self.window_size, -self.shift_size),
+                        slice(-self.shift_size, None))
             cnt = 0
             for h in h_slices:
                 for w in w_slices:
                     img_mask[:, h, w, :] = cnt
                     cnt += 1
 
-            # nW, window_size, window_size, 1
             mask_windows = self.window_partition(img_mask)
-            mask_windows = mask_windows.view(
-                -1, self.window_size * self.window_size)
+            mask_windows = mask_windows.view(-1, self.window_size * self.window_size)
             attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-            attn_mask = attn_mask.masked_fill(attn_mask != 0,
-                                              float(-100.0)).masked_fill(
-                                                  attn_mask == 0, float(0.0))
+            attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
         else:
             shifted_query = query
-            shifted_v_residual = v_residual_pad
+            shifted_vres = v_residual_map
             attn_mask = None
 
+        # --------- 3) window partition ----------
         # nW*B, window_size, window_size, C
         query_windows = self.window_partition(shifted_query)
         # nW*B, window_size*window_size, C
-        query_windows = query_windows.view(-1, self.window_size**2, C)
+        query_windows = query_windows.view(-1, self.window_size ** 2, C)
 
-        v_residual_windows = None
-        if shifted_v_residual is not None:
-            v_residual_windows = self.window_partition(shifted_v_residual)
-            v_residual_windows = v_residual_windows.view(-1, self.window_size**2, C)
-
-        # W-MSA/SW-MSA (nW*B, window_size*window_size, C)
-        attn_out = self.w_msa(query_windows, mask=attn_mask, v_residual=v_residual_windows, return_v=return_v)
-
-        if return_v is not None:
-            attn_windows, v_raw_windows = attn_out
+        if shifted_vres is not None:
+            vres_windows = self.window_partition(shifted_vres)
+            vres_windows = vres_windows.view(-1, self.window_size ** 2, C)
         else:
-            attn_windows = attn_out
+            vres_windows = None
 
-        # merge windows
-        attn_windows = attn_windows.view(-1, self.window_size,
-                                         self.window_size, C)
+        # --------- 4) W-MSA/SW-MSA ----------
+        if return_v:
+            # 这里要求 self.w_msa 支持 return_v / v_residual，并返回 (attn_out, v_raw)
+            attn_windows, v_raw_windows = self.w_msa(
+                query_windows, mask=attn_mask, v_residual=vres_windows, return_v=True
+            )
+        else:
+            attn_windows = self.w_msa(
+                query_windows, mask=attn_mask, v_residual=vres_windows, return_v=False
+            )
+            v_raw_windows = None
 
-        # B H' W' C
+        # --------- 5) merge windows ----------
+        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
         shifted_x = self.window_reverse(attn_windows, H_pad, W_pad)
-        # reverse cyclic shift
+
+        if return_v:
+            # 把 v_raw_windows 也还原回 (B, H_pad, W_pad, C)
+            v_raw_windows = v_raw_windows.view(-1, self.window_size, self.window_size, C)
+            shifted_vraw = self.window_reverse(v_raw_windows, H_pad, W_pad)
+        else:
+            shifted_vraw = None
+
+        # --------- 6) reverse cyclic shift ----------
         if self.shift_size > 0:
-            x = torch.roll(
-                shifted_x,
-                shifts=(self.shift_size, self.shift_size),
-                dims=(1, 2))
+            x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+            if return_v:
+                v_raw_map = torch.roll(shifted_vraw, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+            else:
+                v_raw_map = None
         else:
             x = shifted_x
+            v_raw_map = shifted_vraw
 
-        if pad_r > 0 or pad_b:
+        # --------- 7) remove padding ----------
+        if pad_r > 0 or pad_b > 0:
             x = x[:, :H, :W, :].contiguous()
-
-        v_raw = None
-        if return_v:
-            v_raw_windows = v_raw_windows.view(-1, self.window_size, self.window_size, C)
-            shifted_v = self.window_reverse(v_raw_windows, H_pad, W_pad)
-            if self.shift_size > 0:
-                v_map = torch.roll(
-                    shifted_v,
-                    shifts=(self.shift_size, self.shift_size),
-                    dims=(1, 2))
-            else:
-                v_map = shifted_v
-            if pad_r > 0 or pad_b:
-                v_map = v_map[:, :H, :W, :].contiguous()
-            v_raw = v_map.view(B, H * W, C)
+            if return_v:
+                v_raw_map = v_raw_map[:, :H, :W, :].contiguous()
 
         x = x.view(B, H * W, C)
-
         x = self.drop(x)
-        if return_v:
-            return x, v_raw
-        return x
 
+        if return_v:
+            v_raw = v_raw_map.view(B, H * W, C)
+            return x, v_raw
+
+        return x
     def window_reverse(self, windows, H, W):
         window_size = self.window_size
         B = int(windows.shape[0] / (H * W / window_size / window_size))

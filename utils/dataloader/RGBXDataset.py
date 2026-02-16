@@ -28,6 +28,7 @@ class RGBXDataset(data.Dataset):
 
     def __len__(self):
         if self._file_length is not None:
+
             return self._file_length
         return len(self._file_names)
 
